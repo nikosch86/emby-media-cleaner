@@ -225,7 +225,7 @@ FAVORITES = list()
 for playedItem in ITEMS:
     if 'Played' in playedItem['UserData']:
         if playedItem['UserData']['Played'] and playedItem['UserData']['PlayCount'] > 0:
-            lastPlayed = datetime.strptime(playedItem['UserData']['LastPlayedDate'], '%Y-%m-%dT%H:%M:%S.0000000+00:00')
+            lastPlayed = datetime.strptime(playedItem['UserData']['LastPlayedDate'], '%Y-%m-%dT%H:%M:%S.0000000Z')
             daysSincePlayed = datetime.utcnow() - lastPlayed
             if lastPlayed > CUTOFF:
                 continue
