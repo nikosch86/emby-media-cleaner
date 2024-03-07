@@ -107,7 +107,7 @@ def get_played_items(itemUserId):
     get played media ITEMS
     """
     # path = '/Items?Recursive=true&IsPlayed=true'
-    path = "/Users/%s/Items?Recursive=true&IsPlayed=true" % (itemUserId)
+    path = "/Users/%s/Items?IncludeItemTypes=Episode,Movie&Recursive=true&IsPlayed=true&IsFavorite=false&Items=UserDataPlayCount,UserDataLastPlayedDate,UserDataIsFavorite" % (itemUserId)
     try:
         items = requests.get("%s%s" % (ARGS.url, path), headers={
                              'X-Emby-Token': EMBY_TOKEN})
