@@ -10,7 +10,7 @@ import os
 import pprint
 import sys
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from functools import cache
 
 import coloredlogs
@@ -241,20 +241,23 @@ else:
     EMBY_TOKEN = ARGS.auth_token
 
 ITEMS = get_played_items(userId)
-CUTOFF = datetime.utcnow() - timedelta(ARGS.days)
+LOGGER.debug(f"got {len(ITEMS)} played items")
+CUTOFF = datetime.now(timezone.utc) - timedelta(ARGS.days)
 FAVORITES = list()
 DELETED_ITEMS = 0
 DELETED_ITEMS_STATS = defaultdict(int)
 for playedItem in ITEMS:
     if 'Played' in playedItem['UserData']:
-        if playedItem['UserData']['Played'] and playedItem['UserData']['PlayCount'] > 0:
+        userItem = get_item(userId, playedItem['Id'])
+        playCount = userItem['UserData']['PlayCount']
+        if playedItem['UserData']['Played'] and playCount > 0:
             lastPlayed = datetime.strptime(
-                playedItem['UserData']['LastPlayedDate'], '%Y-%m-%dT%H:%M:%S.0000000Z')
-            daysSincePlayed = datetime.utcnow() - lastPlayed
+                userItem['UserData']['LastPlayedDate'], '%Y-%m-%dT%H:%M:%S.0000000Z').replace(tzinfo=timezone.utc)
+            daysSincePlayed = datetime.now(timezone.utc) - lastPlayed
             if lastPlayed > CUTOFF:
                 continue
             LOGGER.debug(
-                f"{playedItem['Type']}: '{playedItem['Name']}' Fav: {playedItem['UserData']['IsFavorite']} Playcount: {playedItem['UserData']['PlayCount']}")
+                f"{playedItem['Type']}: '{playedItem['Name']}' Fav: {userItem['UserData']['IsFavorite']} Playcount: {playCount}")
             if recursive_fav(userId, playedItem):
                 LOGGER.debug("item is favorite, skip")
                 continue
