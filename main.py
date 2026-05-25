@@ -154,25 +154,30 @@ def get_item(itemUserId, itemId):
 
 def delete_item(itemId):
     """
-    delete item by id
+    delete item by id. Returns True on success, False on a per-item failure
+    (so the loop can skip and continue rather than aborting the run).
     """
     if vars(ARGS).get('dry_run'):
         LOGGER.debug("[dry-run] _NOT_ removing item by id '%s'", itemId)
-        return
+        return True
 
     LOGGER.debug("deleting item by id '%s'", itemId)
     path = "/Items/%s" % (itemId)
     try:
         deleteItem = requests.delete("%s%s" % (ARGS.url, path), headers={
                                      'X-Emby-Token': EMBY_TOKEN})
-    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
-        cleanup_and_die(
-            "got exception when trying to delete item %s" % (itemId))
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+        LOGGER.warning(
+            "connection error deleting item %s, skipping: %s", itemId, exc)
+        return False
 
     if deleteItem.status_code != requests.codes.ok and deleteItem.status_code != 204:  # pylint: disable=E1101
-        LOGGER.debug(deleteItem.text)
-        cleanup_and_die("got error code '%s' when trying to delete item %s" % (
-            deleteItem.status_code, itemId))
+        LOGGER.warning(
+            "Emby returned HTTP %s deleting item %s, skipping: %s",
+            deleteItem.status_code, itemId, deleteItem.text[:200] if deleteItem.text else '')
+        return False
+
+    return True
 
 
 def recursive_fav(itemUserId, item):
@@ -271,7 +276,6 @@ for playedItem in ITEMS:
                 series = get_item(userId, playedItem['SeriesId'])['Name']
                 LOGGER.info(
                     f"{playedItem['Type']}: '{series}' '{season}' '{playedItem['Name']}' played {daysSincePlayed.days} days ago")
-                DELETED_ITEMS_STATS[series] += 1
             elif playedItem['Type'] == 'Season':
                 series = get_item(userId, playedItem['SeriesId'])['Name']
                 LOGGER.info(
@@ -279,7 +283,17 @@ for playedItem in ITEMS:
             else:
                 LOGGER.info(
                     f"{playedItem['Type']}: '{playedItem['Name']}' played {daysSincePlayed.days} days ago")
-            delete_item(playedItem['Id'])
+
+            if not userItem.get('CanDelete', True):
+                LOGGER.warning(
+                    f"{playedItem['Type']} '{playedItem['Name']}' (id={playedItem['Id']}) reports CanDelete=false, skipping")
+                continue
+
+            if not delete_item(playedItem['Id']):
+                continue
+
+            if playedItem['Type'] == 'Episode':
+                DELETED_ITEMS_STATS[series] += 1
             DELETED_ITEMS += 1
             if DELETED_ITEMS >= ARGS.limit:
                 LOGGER.info(
