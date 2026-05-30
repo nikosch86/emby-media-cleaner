@@ -123,7 +123,8 @@ def get_played_items(itemUserId):
         cleanup_and_die("something went wrong getting played items")
 
     if len(items.json()['Items']) == 0:
-        cleanup_and_die("no items found")
+        LOGGER.info("no played items found, nothing to clean up")
+        sys.exit(0)
 
     return items.json()['Items']
 
