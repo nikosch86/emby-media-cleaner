@@ -79,3 +79,13 @@ a Dockerfile is provided and can be used as follows:
 
 Environment variables can be used with the Dockerfile as shown:  
 `docker build . -t remover && docker run -it -e EMBY_URL -e EMBY_USER -e EMBY_TOKEN remover`
+
+With several users and a working set, mount the directory that holds the file (Docker would create a missing file as a directory):  
+`docker run -it -e EMBY_URL -e EMBY_TOKEN -e EMBY_USER=alice,bob -e EMBY_POLICY=any -v /path/to/state:/working-set:ro -e EMBY_WORKING_SET=/working-set/working-set.json remover`
+
+## Development
+
+`pip install -r requirements-dev.txt`, then:
+
+- `make test` runs `main.py` against a fake Emby server (`tests/fake_emby.py`) and fails below 90% line coverage
+- `make check` runs pylint with `.pylintrc`

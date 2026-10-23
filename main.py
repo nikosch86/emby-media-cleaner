@@ -19,6 +19,7 @@ import coloredlogs
 import requests
 
 LOGGER = logging.getLogger(__name__)
+REQUEST_TIMEOUT = 60
 PP = pprint.PrettyPrinter(indent=2)
 
 ARGPARSER = argparse.ArgumentParser()
@@ -89,8 +90,7 @@ for var in ['url', 'user']:
         LOGGER.debug("%s set to %s", var, vars(ARGS).get(var))
     else:
         ARGPARSER.print_help(sys.stderr)
-        cleanup_and_die(
-            "argument '--{}' is required, specify through ENV or CLI".format(var))
+        cleanup_and_die(f"argument '--{var}' is required, specify through ENV or CLI")
 
 # argparse does not check choices for defaults taken from ENV
 POLICIES = {
@@ -100,7 +100,7 @@ POLICIES = {
     'any': lambda played, users: played > 0,
 }
 if ARGS.policy not in POLICIES:
-    cleanup_and_die("policy '%s' is not one of %s" % (ARGS.policy, ', '.join(POLICIES)))
+    cleanup_and_die(f"policy '{ARGS.policy}' is not one of {', '.join(POLICIES)}")
 
 
 def get_auth_token(username, password):
@@ -116,14 +116,13 @@ def get_auth_token(username, password):
     }
     try:
         authenticationToken = requests.post(
-            "%s%s" % (ARGS.url, path), headers=headers, data=data)
+            f"{ARGS.url}{path}", headers=headers, data=data, timeout=REQUEST_TIMEOUT)
     except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
         cleanup_and_die("got exception when trying to fetch token")
 
     if authenticationToken.status_code != requests.codes.ok:  # pylint: disable=E1101
         LOGGER.debug(authenticationToken.text)
-        cleanup_and_die("got error code '%s' when trying to fetch token" % (
-            authenticationToken.status_code))
+        cleanup_and_die(f"got error code '{authenticationToken.status_code}' when trying to fetch token")
 
     if 'AccessToken' not in authenticationToken.json():
         cleanup_and_die("something went wrong getting the access token")
@@ -136,17 +135,17 @@ def get_played_items(itemUserId):
     get played media ITEMS
     """
     # path = '/Items?Recursive=true&IsPlayed=true'
-    path = "/Users/%s/Items?IncludeItemTypes=Episode,Movie&Recursive=true&IsPlayed=true&IsFavorite=false&Items=UserDataPlayCount,UserDataLastPlayedDate,UserDataIsFavorite" % (itemUserId)
+    path = (f"/Users/{itemUserId}/Items?IncludeItemTypes=Episode,Movie&Recursive=true&IsPlayed=true"
+            "&IsFavorite=false&Items=UserDataPlayCount,UserDataLastPlayedDate,UserDataIsFavorite")
     try:
-        items = requests.get("%s%s" % (ARGS.url, path), headers={
-                             'X-Emby-Token': EMBY_TOKEN})
+        items = requests.get(f"{ARGS.url}{path}", headers={
+                             'X-Emby-Token': EMBY_TOKEN}, timeout=REQUEST_TIMEOUT)
     except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
         cleanup_and_die("got exception when trying to get played items")
 
     if items.status_code != requests.codes.ok:  # pylint: disable=E1101
         LOGGER.debug(items.text)
-        cleanup_and_die(
-            "got error code '%s' when trying to get played items" % (items.status_code))
+        cleanup_and_die(f"got error code '{items.status_code}' when trying to get played items")
 
     if 'Items' not in items.json():
         cleanup_and_die("something went wrong getting played items")
@@ -161,19 +160,18 @@ def get_item(itemUserId, itemId):
     """
     cached = get_item.cache_info()
     if cached.hits > 0:
-        LOGGER.debug(f"Cache hit for {itemUserId} {itemId}")
+        LOGGER.debug("Cache hit for %s %s", itemUserId, itemId)
     # path = '/Items?Recursive=true&IsPlayed=true'
-    path = "/Users/%s/Items/%s" % (itemUserId, itemId)
+    path = f"/Users/{itemUserId}/Items/{itemId}"
     try:
-        items = requests.get("%s%s" % (ARGS.url, path), headers={
-                             'X-Emby-Token': EMBY_TOKEN})
+        items = requests.get(f"{ARGS.url}{path}", headers={
+                             'X-Emby-Token': EMBY_TOKEN}, timeout=REQUEST_TIMEOUT)
     except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
-        cleanup_and_die("got exception when trying to get item %s" % (itemId))
+        cleanup_and_die(f"got exception when trying to get item {itemId}")
 
     if items.status_code != requests.codes.ok:  # pylint: disable=E1101
         LOGGER.debug(items.text)
-        cleanup_and_die("got error code '%s' when trying to get item %s" % (
-            items.status_code, itemId))
+        cleanup_and_die(f"got error code '{items.status_code}' when trying to get item {itemId}")
 
     return items.json()
 
@@ -188,16 +186,16 @@ def delete_item(itemId):
         return True
 
     LOGGER.debug("deleting item by id '%s'", itemId)
-    path = "/Items/%s" % (itemId)
+    path = f"/Items/{itemId}"
     try:
-        deleteItem = requests.delete("%s%s" % (ARGS.url, path), headers={
-                                     'X-Emby-Token': EMBY_TOKEN})
+        deleteItem = requests.delete(f"{ARGS.url}{path}", headers={
+                                     'X-Emby-Token': EMBY_TOKEN}, timeout=REQUEST_TIMEOUT)
     except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
         LOGGER.warning(
             "connection error deleting item %s, skipping: %s", itemId, exc)
         return False
 
-    if deleteItem.status_code != requests.codes.ok and deleteItem.status_code != 204:  # pylint: disable=E1101
+    if deleteItem.status_code not in (requests.codes.ok, 204):  # pylint: disable=E1101
         LOGGER.warning(
             "Emby returned HTTP %s deleting item %s, skipping: %s",
             deleteItem.status_code, itemId, deleteItem.text[:200] if deleteItem.text else '')
@@ -259,8 +257,7 @@ def played_state(itemUserName, itemUserId, itemId):
     if datePlayed > CUTOFF:
         LOGGER.debug('%s "%s" played too recently by %s', item['Type'], item['Name'], itemUserName)
         return True, None
-    LOGGER.debug(
-        f"{item['Type']}: '{item['Name']}' User: {itemUserName} Playcount: {userData['PlayCount']}")
+    LOGGER.debug("%s: '%s' User: %s Playcount: %s", item['Type'], item['Name'], itemUserName, userData['PlayCount'])
     return False, datePlayed
 
 
@@ -273,21 +270,21 @@ def load_working_set(path):
         with open(path, encoding='utf-8') as workingSetFile:
             workingSet = json.load(workingSetFile)
         if workingSet['version'] != 1:
-            raise ValueError("unsupported version %s" % (workingSet['version']))
+            raise ValueError(f"unsupported version {workingSet['version']}")
         age = datetime.now(timezone.utc) - datetime.fromisoformat(workingSet['generated_at'])
-        # id is null while the Target does not hold the item yet, path is set then
+        # id is null while this server does not hold the item yet, path is set then
         byId = {entry['id']: entry for entry in workingSet['items'] if entry.get('id')}
         byPath = {entry['path'].rstrip('/'): entry for entry in workingSet['items'] if entry.get('path')}
         uncovered = [name for name, _ in USERS if name not in workingSet.get('users', [name])]
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
-        cleanup_and_die("working set %s is not usable, not deleting anything: %r" % (path, exc))
+        cleanup_and_die(f"working set {path} is not usable, not deleting anything: {exc!r}")
     if age > timedelta(hours=ARGS.working_set_max_age):
-        cleanup_and_die("working set %s was generated %s ago, not deleting anything" % (path, age))
+        cleanup_and_die(f"working set {path} was generated {age} ago, not deleting anything")
     # a generated_at in the future would never become stale
     if age < -timedelta(minutes=5):
-        cleanup_and_die("working set %s was generated %s in the future, not deleting anything" % (path, -age))
+        cleanup_and_die(f"working set {path} was generated {-age} in the future, not deleting anything")
     if uncovered:
-        cleanup_and_die("working set %s does not cover %s, not deleting anything" % (path, ', '.join(uncovered)))
+        cleanup_and_die(f"working set {path} does not cover {', '.join(uncovered)}, not deleting anything")
     LOGGER.debug("working set has %s items, generated %s ago", len(byId), age)
     return byId, byPath
 
@@ -307,25 +304,25 @@ def working_set_entry(item):
 
 
 try:
-    CHECK_EMBY_SERVER = requests.get("%s%s" % (ARGS.url, '/Users/Public'))
+    CHECK_EMBY_SERVER = requests.get(f"{ARGS.url}/Users/Public", timeout=REQUEST_TIMEOUT)
 except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
-    cleanup_and_die("emby is not reachable via %s" % (ARGS.url))
+    cleanup_and_die(f"emby is not reachable via {ARGS.url}")
 
 if CHECK_EMBY_SERVER.status_code != requests.codes.ok:  # pylint: disable=E1101
-    cleanup_and_die("emby is not reachable via %s" % (ARGS.url))
+    cleanup_and_die(f"emby is not reachable via {ARGS.url}")
 else:
     PUBLIC_USERS = CHECK_EMBY_SERVER.json()
 
 USER_IDS = {user['Name']: user['Id'] for user in PUBLIC_USERS}
 
-USERS = list()
+USERS = []
 for userName in [name.strip() for name in ARGS.user.split(',') if name.strip()]:
     if userName not in USER_IDS:
         LOGGER.debug(PUBLIC_USERS)
-        cleanup_and_die("%s is not a known user" % (userName))
+        cleanup_and_die(f"{userName} is not a known user")
     USERS.append((userName, USER_IDS[userName]))
 if ARGS.policy == 'user' and len(USERS) != 1:
-    cleanup_and_die("policy 'user' takes exactly one user, got %s" % (ARGS.user))
+    cleanup_and_die(f"policy 'user' takes exactly one user, got {ARGS.user}")
 
 if not vars(ARGS).get('auth_token'):
     LOGGER.warning(
@@ -348,14 +345,14 @@ for _, listUserId in (USERS[:1] if ARGS.policy == 'all' else USERS):
 if len(ITEMS) == 0:
     LOGGER.info("no played items found, nothing to clean up")
     sys.exit(0)
-LOGGER.debug(f"got {len(ITEMS)} played items")
+LOGGER.debug("got %s played items", len(ITEMS))
 CUTOFF = datetime.now(timezone.utc) - timedelta(ARGS.days)
 FAVORITES = set()
-DELETED_ITEMS = 0
+deletedItems = 0
 DELETED_ITEMS_STATS = defaultdict(int)
 for listUserId, playedItem in ITEMS.values():
     keep = False
-    playedDates = list()
+    playedDates = []
     for checkUserName, checkUserId in USERS:
         keep, userPlayed = played_state(checkUserName, checkUserId, playedItem['Id'])
         if keep:
@@ -368,32 +365,25 @@ for listUserId, playedItem in ITEMS.values():
     userItem = get_item(listUserId, playedItem['Id'])
 
     if playedItem['MediaType'] != 'Video':
-        cleanup_and_die("%s: %s media type is %s" % (
-            playedItem['Type'], playedItem['Name'], playedItem['MediaType']))
+        cleanup_and_die(f"{playedItem['Type']}: {playedItem['Name']} media type is {playedItem['MediaType']}")
     LOGGER.debug(playedItem)
     if playedItem['Type'] == 'Episode':
         season = get_item(listUserId, playedItem['SeasonId'])['Name']
         series = get_item(listUserId, playedItem['SeriesId'])['Name']
-        LOGGER.info(
-            f"{playedItem['Type']}: '{series}' '{season}' '{playedItem['Name']}' played {daysSincePlayed.days} days ago")
-    elif playedItem['Type'] == 'Season':
-        series = get_item(listUserId, playedItem['SeriesId'])['Name']
-        LOGGER.info(
-            f"{playedItem['Type']}: '{series}' '{season}' played {daysSincePlayed.days} days ago")
+        LOGGER.info("%s: '%s' '%s' '%s' played %s days ago",
+                    playedItem['Type'], series, season, playedItem['Name'], daysSincePlayed.days)
     else:
-        LOGGER.info(
-            f"{playedItem['Type']}: '{playedItem['Name']}' played {daysSincePlayed.days} days ago")
+        LOGGER.info("%s: '%s' played %s days ago", playedItem['Type'], playedItem['Name'], daysSincePlayed.days)
 
     workingSetEntry = working_set_entry(userItem)
     if workingSetEntry:
-        LOGGER.info(
-            f"{playedItem['Type']} '{playedItem['Name']}' is in the working set "
-            f"({workingSetEntry.get('reason')} {workingSetEntry.get('user') or 'all users'}), skipping")
+        LOGGER.info("%s '%s' is in the working set (%s %s), skipping", playedItem['Type'], playedItem['Name'],
+                    workingSetEntry.get('reason'), workingSetEntry.get('user') or 'all users')
         continue
 
     if not userItem.get('CanDelete', True):
-        LOGGER.warning(
-            f"{playedItem['Type']} '{playedItem['Name']}' (id={playedItem['Id']}) reports CanDelete=false, skipping")
+        LOGGER.warning("%s '%s' (id=%s) reports CanDelete=false, skipping",
+                       playedItem['Type'], playedItem['Name'], playedItem['Id'])
         continue
 
     if not delete_item(playedItem['Id']):
@@ -401,11 +391,10 @@ for listUserId, playedItem in ITEMS.values():
 
     if playedItem['Type'] == 'Episode':
         DELETED_ITEMS_STATS[series] += 1
-    DELETED_ITEMS += 1
-    if DELETED_ITEMS >= ARGS.limit:
-        LOGGER.info(
-            f"{DELETED_ITEMS} out of {ARGS.limit} items deleted, limit reached")
+    deletedItems += 1
+    if deletedItems >= ARGS.limit:
+        LOGGER.info("%s out of %s items deleted, limit reached", deletedItems, ARGS.limit)
         break
 
 for series, count in sorted(DELETED_ITEMS_STATS.items(), key=lambda item: item[1], reverse=True):
-    LOGGER.info(f"{series}: {count}")
+    LOGGER.info("%s: %s", series, count)

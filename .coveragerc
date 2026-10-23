@@ -1,0 +1,6 @@
+[run]
+parallel = True
+include = main.py
+
+[report]
+show_missing = True
