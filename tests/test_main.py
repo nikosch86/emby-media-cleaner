@@ -40,7 +40,7 @@ def run_main(fake, *args, env=None, stdin=None):
         command += ['-m', 'coverage', 'run', f"--rcfile={REPO / '.coveragerc'}"]
     command += [str(REPO / 'main.py'), '--days', '1', *args]
     environment = {key: value for key, value in os.environ.items() if not key.startswith('EMBY_')}
-    environment.update({'EMBY_URL': fake.url, 'EMBY_TOKEN': 'x'})
+    environment.update({'EMBY_URL': fake.url, 'EMBY_TOKEN': 'x', 'NO_PROXY': '127.0.0.1', 'no_proxy': '127.0.0.1'})
     environment.update(env or {})
     # a new session has no controlling terminal, so getpass falls back to stdin
     return subprocess.run(command, cwd=REPO, env=environment, input=stdin, capture_output=True,
@@ -96,6 +96,20 @@ class PolicyTest(FakeEmbyTestCase):
 
     def test_majority_of_three(self):
         self.assertRun(0, ['e1', 'm1'], '--user', 'niko,rhea,kid', '--policy', 'majority')
+
+    def test_majority_takes_candidates_from_every_user(self):
+        self.fake.state['items'] = {'m8': (movie('m8', 'Not for niko'), {'r1': finished(83), 'k1': finished(83)})}
+        self.assertRun(0, ['m8'], '--user', 'niko,rhea,kid', '--policy', 'majority')
+
+    def test_majority_still_honours_a_later_users_veto(self):
+        self.fake.state['items'] = {
+            'm7': (movie('m7', 'Kid watching'), {'n1': finished(83), 'r1': finished(83), 'k1': user_data(pos=5)})}
+        self.assertRun(0, [], '--user', 'niko,rhea,kid', '--policy', 'majority')
+
+    def test_favorite_item_is_kept(self):
+        self.fake.state['items'] = {
+            'm9': (movie('m9', 'Rhea likes it'), {'n1': finished(83), 'r1': user_data(fav=True)})}
+        self.assertRun(0, [], '--user', 'niko,rhea', '--policy', 'any')
 
     def test_all_of_three(self):
         self.assertRun(0, ['e1'], '--user', 'niko,rhea,kid', '--policy', 'all')
@@ -209,13 +223,31 @@ class WorkingSetTest(FakeEmbyTestCase):
         self.write([], age=-timedelta(minutes=2))
         self.assertAny(0, ['e1', 'e3', 'e4', 'm1', 'm2', 'm4'])
 
+    def test_clock_skew_beyond_five_minutes_is_refused(self):
+        self.write([], age=-timedelta(minutes=10))
+        self.assertAny(2, [])
+
+    def test_item_id_matches_whatever_the_path(self):
+        self.write([{'id': 'e3', 'path': '/elsewhere/e3.mkv', 'user': 'rhea', 'reason': 'look-ahead'}])
+        self.assertAny(0, ['e1', 'e4', 'm1', 'm2', 'm4'])
+
+    def test_season_id_without_path_covers_its_episodes(self):
+        self.write([{'id': 'sea1', 'path': None, 'user': 'rhea', 'reason': 'staged'}])
+        self.assertAny(0, ['m1', 'm2', 'm4'])
+
+    def test_series_id_without_path_covers_its_episodes(self):
+        self.write([{'id': 'ser1', 'path': None, 'user': None, 'reason': 'staged'}])
+        self.assertAny(0, ['m1', 'm2', 'm4'])
+
     def test_unknown_version(self):
         self.write([], version=2)
-        self.assertAny(2, [])
+        process = self.assertAny(2, [])
+        self.assertIn('unsupported version 2', process.stderr)
 
     def test_generated_at_without_timezone(self):
         self.write([], generated_at=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S'))
-        self.assertAny(2, [])
+        process = self.assertAny(2, [])
+        self.assertIn("can't subtract offset-naive and offset-aware datetimes", process.stderr)
 
     def test_listed_user_missing_from_users(self):
         self.write([], users=['niko'])
@@ -232,11 +264,13 @@ class WorkingSetTest(FakeEmbyTestCase):
     def test_truncated_json(self):
         self.path.write_text('{"version": 1, "generated_at": "2026-10-23T08:00:00Z", "items": [{"id": "e1"',
                              encoding='utf-8')
-        self.assertAny(2, [])
+        process = self.assertAny(2, [])
+        self.assertIn('JSONDecodeError', process.stderr)
 
     def test_path_is_a_directory(self):
         self.path = self.directory
-        self.assertAny(2, [])
+        process = self.assertAny(2, [])
+        self.assertIn('IsADirectoryError', process.stderr)
 
 
 class ArgumentTest(FakeEmbyTestCase):
@@ -363,6 +397,10 @@ class DeleteFailureTest(FakeEmbyTestCase):
         process = self.assertRun(0, ['e3', 'e4'], '--user', 'niko,rhea', '--policy', 'any', '--limit', '2', '-v')
         self.assertIn('2 out of 2 items deleted, limit reached', process.stderr)
 
+    def test_limit_does_not_count_a_connection_error(self):
+        self.fake.drop_paths.add('/Items/e1')
+        self.assertRun(0, ['e3', 'e4'], '--user', 'niko,rhea', '--policy', 'any', '--limit', '2')
+
 
 class FavoriteCacheTest(FakeEmbyTestCase):
     """
@@ -400,7 +438,36 @@ class PlayedDateTest(FakeEmbyTestCase):
 
     def test_undated_play_is_kept_and_logged(self):
         process = self.assertRun(0, [], '--user', 'niko', '-v')
-        self.assertIn('Movie "Undated" played by niko but has no LastPlayedDate, keeping', process.stderr)
+        self.assertIn('Movie "Undated" played by niko has no usable LastPlayedDate (None), not counting that play',
+                      process.stderr)
+
+    def test_undated_play_does_not_count_under_any(self):
+        self.fake.state['items'] = {'x1': (movie('x1', 'Undated'), {'r1': user_data(True)})}
+        self.assertRun(0, [], '--user', 'niko,rhea', '--policy', 'any')
+
+    def test_net_empty_date_is_undated(self):
+        self.fake.state['items'] = {
+            'x5': (movie('x5', 'Min date'), {'n1': user_data(True, 1, 0, '0001-01-01T00:00:00.0000000Z')})}
+        self.assertRun(0, [], '--user', 'niko')
+        self.assertRun(0, ['x5'], '--user', 'niko', '--accept-undated')
+
+    def test_naive_date_is_taken_as_utc(self):
+        self.fake.state['items'] = {
+            'x6': (movie('x6', 'Naive'), {'n1': user_data(True, 0, 0, emby_date(62)[:19])})}
+        self.assertRun(0, ['x6'], '--user', 'niko')
+
+    def test_unreadable_date_does_not_count_and_does_not_stop_the_run(self):
+        self.fake.state['items'] = {
+            'x7': (movie('x7', 'Garbage'), {'n1': user_data(True, 0, 0, 'last tuesday')}),
+            'x8': (movie('x8', 'Fine'), {'n1': finished(83)}),
+        }
+        process = self.assertRun(0, ['x8'], '--user', 'niko', '--accept-undated', '-v')
+        self.assertIn('Movie "Garbage" played by niko has no usable LastPlayedDate (last tuesday)', process.stderr)
+
+    def test_log_reports_the_latest_dated_play(self):
+        self.fake.state['items'] = {'x9': (movie('x9', 'Twice'), {'n1': finished(83), 'r1': finished(10)})}
+        process = self.assertRun(0, ['x9'], '--user', 'niko,rhea', '-v')
+        self.assertIn("Movie: 'Twice' played 10 days ago", process.stderr)
 
     def test_accept_undated_counts_it_as_finished(self):
         process = self.assertRun(0, ['x1'], '--user', 'niko', '--accept-undated', '-v')
@@ -411,6 +478,12 @@ class PlayedDateTest(FakeEmbyTestCase):
 
     def test_accept_undated_env_off(self):
         self.assertRun(0, [], '--user', 'niko', env={'EMBY_ACCEPT_UNDATED': 'no'})
+
+    def test_accept_undated_env_values(self):
+        for value in ('true', 'Yes', ' 1\n'):
+            with self.subTest(value=value):
+                self.fake.deletes.clear()
+                self.assertRun(0, ['x1'], '--user', 'niko', env={'EMBY_ACCEPT_UNDATED': value})
 
     def test_accept_undated_age_comes_from_the_dated_plays(self):
         self.fake.state['items'] = {'x3': (movie('x3', 'Mixed'), {'n1': finished(83), 'r1': user_data(True)})}

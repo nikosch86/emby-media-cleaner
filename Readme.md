@@ -31,9 +31,8 @@ options:
                         be specified as ENV EMBY_ACCEPT_UNDATED=1 (default: False)
   --auth-token AUTH_TOKEN
                         emby auth key, can be specified as ENV EMBY_TOKEN (default: None)
-  --days DAYS, -d DAYS  delete items this amount of days after they have been played (default: 7)
-  --limit LIMIT, -l LIMIT
-                        maximum number of items to delete (default: 50)
+  --days, -d DAYS       delete items this amount of days after they have been played (default: 7)
+  --limit, -l LIMIT     maximum number of items to delete (default: 50)
   --verbose, -v
   --dry-run             dry run, do not actually remove torrents
 ```
@@ -42,7 +41,7 @@ options:
 
 When several users share a server, list all of them, e.g. `EMBY_USER=alice,bob`.  
 A user has finished an item when Emby reports it played with a LastPlayedDate older than `--days`, whatever its play count.  
-An item played without a LastPlayedDate is kept and logged, unless `--accept-undated` counts it as played long enough ago.  
+A play without a usable LastPlayedDate does not count and is logged, unless `--accept-undated` counts a missing date as long enough ago.  
 `--policy` decides how many of the listed users have to have finished an item before it is removed:
 
 - `user`: exactly one user is listed, and that user finished it
@@ -89,7 +88,7 @@ With several users and a working set, mount the directory that holds the file (D
 
 ## Development
 
-`pip install -r requirements-dev.txt`, then:
+With Python 3.11 or newer, `pip install -r requirements-dev.txt`, then:
 
 - `make test` runs `main.py` against a fake Emby server (`tests/fake_emby.py`) and fails below 90% line coverage
 - `make check` runs pylint with `.pylintrc`

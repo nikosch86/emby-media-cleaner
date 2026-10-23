@@ -50,7 +50,7 @@ ARGPARSER.add_argument(
     type=int)
 ARGPARSER.add_argument(
     "--accept-undated",
-    default=os.environ.get('EMBY_ACCEPT_UNDATED', '').lower() in ('1', 'true', 'yes'),
+    default=os.environ.get('EMBY_ACCEPT_UNDATED', '').strip().lower() in ('1', 'true', 'yes'),
     help="count items played without a LastPlayedDate as played before --days, "
     "can be specified as ENV EMBY_ACCEPT_UNDATED=1 (default: %(default)s)",
     action="store_true")
@@ -242,6 +242,17 @@ def recursive_fav(itemUserId, item):
     return False
 
 
+def parse_date(value):
+    """
+    an Emby date as an aware datetime, naive dates taken as UTC, None if value is not a date
+    """
+    try:
+        date = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return date if date.tzinfo else date.replace(tzinfo=timezone.utc)
+
+
 def played_state(itemUserName, itemUserId, itemId):
     """
     return (keep, finished, datePlayed): keep if the user needs the item (in progress, played after CUTOFF,
@@ -255,14 +266,18 @@ def played_state(itemUserName, itemUserId, itemId):
     if not userData.get('Played'):
         LOGGER.debug('%s "%s" not played by %s', item['Type'], item['Name'], itemUserName)
         return False, False, None
-    if not userData.get('LastPlayedDate'):
-        if ARGS.accept_undated:
-            LOGGER.debug('%s "%s" played by %s at an unknown date', item['Type'], item['Name'], itemUserName)
-            return False, True, None
-        LOGGER.info('%s "%s" played by %s but has no LastPlayedDate, keeping',
-                    item['Type'], item['Name'], itemUserName)
+    lastPlayed = userData.get('LastPlayedDate') or ''
+    # .NET's empty DateTime is no date either
+    if lastPlayed.startswith('0001-01-01'):
+        lastPlayed = ''
+    if not lastPlayed and ARGS.accept_undated:
+        LOGGER.debug('%s "%s" played by %s at an unknown date', item['Type'], item['Name'], itemUserName)
+        return False, True, None
+    datePlayed = parse_date(lastPlayed)
+    if datePlayed is None:
+        LOGGER.info('%s "%s" played by %s has no usable LastPlayedDate (%s), not counting that play',
+                    item['Type'], item['Name'], itemUserName, userData.get('LastPlayedDate'))
         return False, False, None
-    datePlayed = datetime.fromisoformat(userData['LastPlayedDate'])
     if datePlayed > CUTOFF:
         LOGGER.debug('%s "%s" played too recently by %s', item['Type'], item['Name'], itemUserName)
         return True, False, None
@@ -272,8 +287,8 @@ def played_state(itemUserName, itemUserId, itemId):
 
 def load_working_set(path):
     """
-    return the working set entries by item id and by path, die if the file is
-    missing, unreadable, older than --working-set-max-age or lacks a listed user
+    return the working set entries by item id and by path, die if the file is missing, unreadable,
+    of another version, without timezone, stale, from the future or lacking a listed user
     """
     try:
         with open(path, encoding='utf-8') as workingSetFile:
