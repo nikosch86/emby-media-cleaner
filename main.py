@@ -5,6 +5,7 @@ remove content from emby based on watched status.
 import argparse
 import getpass
 import hashlib
+import json
 import logging
 import os
 import pprint
@@ -27,8 +28,24 @@ ARGPARSER.add_argument(
 ARGPARSER.add_argument(
     "--user",
     default=os.environ.get('EMBY_USER'),
-    help="emby user, or a comma separated list of users that all have to have played an item "
-    "before it is deleted, can be specified as ENV EMBY_USER (default: %(default)s)")
+    help="emby user or comma separated list of users, see --policy, "
+    "can be specified as ENV EMBY_USER (default: %(default)s)")
+ARGPARSER.add_argument(
+    "--policy",
+    default=os.environ.get('EMBY_POLICY', 'all'),
+    choices=['user', 'all', 'majority', 'any'],
+    help="how many of the listed users have to have played an item before it is deleted, "
+    "'user' takes exactly one user, can be specified as ENV EMBY_POLICY (default: %(default)s)")
+ARGPARSER.add_argument(
+    "--working-set",
+    default=os.environ.get('EMBY_WORKING_SET'),
+    help="JSON file of items that are never deleted, nothing is deleted if it is missing or stale, "
+    "can be specified as ENV EMBY_WORKING_SET (default: %(default)s)")
+ARGPARSER.add_argument(
+    "--working-set-max-age",
+    default=6,
+    help="hours after which the working set file is stale (default: %(default)s)",
+    type=int)
 ARGPARSER.add_argument(
     "--auth-token",
     default=os.environ.get('EMBY_TOKEN'),
@@ -73,6 +90,16 @@ for var in ['url', 'user']:
         ARGPARSER.print_help(sys.stderr)
         cleanup_and_die(
             "argument '--{}' is required, specify through ENV or CLI".format(var))
+
+# argparse does not check choices for defaults taken from ENV
+POLICIES = {
+    'user': lambda played, users: played == users,
+    'all': lambda played, users: played == users,
+    'majority': lambda played, users: played * 2 > users,
+    'any': lambda played, users: played > 0,
+}
+if ARGS.policy not in POLICIES:
+    cleanup_and_die("policy '%s' is not one of %s" % (ARGS.policy, ', '.join(POLICIES)))
 
 
 def get_auth_token(username, password):
@@ -122,10 +149,6 @@ def get_played_items(itemUserId):
 
     if 'Items' not in items.json():
         cleanup_and_die("something went wrong getting played items")
-
-    if len(items.json()['Items']) == 0:
-        LOGGER.info("no played items found, nothing to clean up")
-        sys.exit(0)
 
     return items.json()['Items']
 
@@ -214,32 +237,56 @@ def recursive_fav(itemUserId, item):
     return False
 
 
-def played_before_cutoff(itemUserName, itemUserId, itemId):
+def played_state(itemUserName, itemUserId, itemId):
     """
-    return when the user finished the item, or None if the item has to be kept
-    for that user: not played, in progress, played after CUTOFF or favorite
+    return (keep, datePlayed): keep is True if the user still needs the item,
+    because it is in progress, played after CUTOFF or favorite. datePlayed is
+    when the user finished the item before CUTOFF, None if the user has not.
     """
     item = get_item(itemUserId, itemId)
     userData = item['UserData']
-    if not userData.get('Played') or userData.get('PlayCount', 0) == 0:
-        LOGGER.debug('%s "%s" not played by %s', item['Type'], item['Name'], itemUserName)
-        return None
     if userData.get('PlaybackPositionTicks', 0) > 0:
         LOGGER.debug('%s "%s" in progress for %s', item['Type'], item['Name'], itemUserName)
-        return None
-    if not userData.get('LastPlayedDate'):
-        LOGGER.debug('%s "%s" has no LastPlayedDate for %s', item['Type'], item['Name'], itemUserName)
-        return None
+        return True, None
+    if recursive_fav(itemUserId, item):
+        LOGGER.debug('%s "%s" is favorite for %s', item['Type'], item['Name'], itemUserName)
+        return True, None
+    if not userData.get('Played') or userData.get('PlayCount', 0) == 0 or not userData.get('LastPlayedDate'):
+        LOGGER.debug('%s "%s" not played by %s', item['Type'], item['Name'], itemUserName)
+        return False, None
     datePlayed = datetime.strptime(
         userData['LastPlayedDate'], '%Y-%m-%dT%H:%M:%S.0000000Z').replace(tzinfo=timezone.utc)
     if datePlayed > CUTOFF:
-        return None
+        LOGGER.debug('%s "%s" played too recently by %s', item['Type'], item['Name'], itemUserName)
+        return True, None
     LOGGER.debug(
         f"{item['Type']}: '{item['Name']}' User: {itemUserName} Playcount: {userData['PlayCount']}")
-    if recursive_fav(itemUserId, item):
-        LOGGER.debug("item is favorite for %s, skip", itemUserName)
-        return None
-    return datePlayed
+    return False, datePlayed
+
+
+def load_working_set(path):
+    """
+    return the working set entries by item id and by path, die if the file is
+    missing, unreadable, older than --working-set-max-age or lacks a listed user
+    """
+    try:
+        with open(path, encoding='utf-8') as workingSetFile:
+            workingSet = json.load(workingSetFile)
+        if workingSet['version'] != 1:
+            raise ValueError("unsupported version %s" % (workingSet['version']))
+        age = datetime.now(timezone.utc) - datetime.fromisoformat(workingSet['generated_at'])
+        # id is null while the Target does not hold the item yet, path is set then
+        byId = {entry['id']: entry for entry in workingSet['items'] if entry.get('id')}
+        byPath = {entry['path']: entry for entry in workingSet['items'] if entry.get('path')}
+        uncovered = [name for name, _ in USERS if name not in workingSet.get('users', [name])]
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        cleanup_and_die("working set %s is not usable, not deleting anything: %r" % (path, exc))
+    if age > timedelta(hours=ARGS.working_set_max_age):
+        cleanup_and_die("working set %s was generated %s ago, not deleting anything" % (path, age))
+    if uncovered:
+        cleanup_and_die("working set %s does not cover %s, not deleting anything" % (path, ', '.join(uncovered)))
+    LOGGER.debug("working set has %s items, generated %s ago", len(byId), age)
+    return byId, byPath
 
 
 try:
@@ -260,8 +307,8 @@ for userName in [name.strip() for name in ARGS.user.split(',') if name.strip()]:
         LOGGER.debug(PUBLIC_USERS)
         cleanup_and_die("%s is not a known user" % (userName))
     USERS.append((userName, USER_IDS[userName]))
-# played items of the first user are the candidates, every user has to have played them
-userId = USERS[0][1]
+if ARGS.policy == 'user' and len(USERS) != 1:
+    cleanup_and_die("policy 'user' takes exactly one user, got %s" % (ARGS.user))
 
 if not vars(ARGS).get('auth_token'):
     LOGGER.warning(
@@ -274,40 +321,58 @@ if not vars(ARGS).get('auth_token'):
 else:
     EMBY_TOKEN = ARGS.auth_token
 
-ITEMS = get_played_items(userId)
+WORKING_SET_IDS, WORKING_SET_PATHS = load_working_set(ARGS.working_set) if ARGS.working_set else ({}, {})
+
+# with 'all' the first user's played items already hold every candidate
+ITEMS = {}
+for _, listUserId in (USERS[:1] if ARGS.policy == 'all' else USERS):
+    for playedItem in get_played_items(listUserId):
+        ITEMS.setdefault(playedItem['Id'], (listUserId, playedItem))
+if len(ITEMS) == 0:
+    LOGGER.info("no played items found, nothing to clean up")
+    sys.exit(0)
 LOGGER.debug(f"got {len(ITEMS)} played items")
 CUTOFF = datetime.now(timezone.utc) - timedelta(ARGS.days)
 FAVORITES = set()
 DELETED_ITEMS = 0
 DELETED_ITEMS_STATS = defaultdict(int)
-for playedItem in ITEMS:
-    lastPlayedDates = list()
+for listUserId, playedItem in ITEMS.values():
+    keep = False
+    playedDates = list()
     for checkUserName, checkUserId in USERS:
-        lastPlayed = played_before_cutoff(checkUserName, checkUserId, playedItem['Id'])
-        if lastPlayed is None:
+        keep, userPlayed = played_state(checkUserName, checkUserId, playedItem['Id'])
+        if keep:
             break
-        lastPlayedDates.append(lastPlayed)
-    if len(lastPlayedDates) < len(USERS):
+        if userPlayed:
+            playedDates.append(userPlayed)
+    if keep or not POLICIES[ARGS.policy](len(playedDates), len(USERS)):
         continue
-    daysSincePlayed = datetime.now(timezone.utc) - max(lastPlayedDates)
-    userItem = get_item(userId, playedItem['Id'])
+    daysSincePlayed = datetime.now(timezone.utc) - max(playedDates)
+    userItem = get_item(listUserId, playedItem['Id'])
 
     if playedItem['MediaType'] != 'Video':
         cleanup_and_die("%s: %s media type is %s" % (
             playedItem['Type'], playedItem['Name'], playedItem['MediaType']))
     LOGGER.debug(playedItem)
     if playedItem['Type'] == 'Episode':
-        season = get_item(userId, playedItem['SeasonId'])['Name']
-        series = get_item(userId, playedItem['SeriesId'])['Name']
+        season = get_item(listUserId, playedItem['SeasonId'])['Name']
+        series = get_item(listUserId, playedItem['SeriesId'])['Name']
         LOGGER.info(
             f"{playedItem['Type']}: '{series}' '{season}' '{playedItem['Name']}' played {daysSincePlayed.days} days ago")
     elif playedItem['Type'] == 'Season':
-        series = get_item(userId, playedItem['SeriesId'])['Name']
+        series = get_item(listUserId, playedItem['SeriesId'])['Name']
         LOGGER.info(
             f"{playedItem['Type']}: '{series}' '{season}' played {daysSincePlayed.days} days ago")
     else:
         LOGGER.info(
             f"{playedItem['Type']}: '{playedItem['Name']}' played {daysSincePlayed.days} days ago")
+
+    workingSetEntry = WORKING_SET_IDS.get(playedItem['Id']) or WORKING_SET_PATHS.get(userItem.get('Path'))
+    if workingSetEntry:
+        LOGGER.info(
+            f"{playedItem['Type']} '{playedItem['Name']}' is in the working set "
+            f"({workingSetEntry.get('reason')} {workingSetEntry.get('user') or 'all users'}), skipping")
+        continue
 
     if not userItem.get('CanDelete', True):
         LOGGER.warning(

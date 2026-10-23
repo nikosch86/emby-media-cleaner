@@ -8,15 +8,24 @@ It is taking into consideration that Seasons or Series can be marked as favorite
 This is useful in a scenario where an automated system is used to handle media and storage space should be reused.  
 
 ```
-usage: main.py [-h] [--url URL] [--user USER] [--auth-token AUTH_TOKEN] [--days DAYS]
-               [--limit LIMIT] [--verbose] [--dry-run]
+usage: main.py [-h] [--url URL] [--user USER] [--policy {user,all,majority,any}]
+               [--working-set WORKING_SET] [--working-set-max-age WORKING_SET_MAX_AGE]
+               [--auth-token AUTH_TOKEN] [--days DAYS] [--limit LIMIT] [--verbose] [--dry-run]
 
 options:
   -h, --help            show this help message and exit
   --url URL             emby host, can be specified as ENV EMBY_URL (default: None)
-  --user USER           emby user, or a comma separated list of users that all have to have played
-                        an item before it is deleted, can be specified as ENV EMBY_USER (default:
-                        None)
+  --user USER           emby user or comma separated list of users, see --policy, can be specified
+                        as ENV EMBY_USER (default: None)
+  --policy {user,all,majority,any}
+                        how many of the listed users have to have played an item before it is
+                        deleted, 'user' takes exactly one user, can be specified as ENV
+                        EMBY_POLICY (default: all)
+  --working-set WORKING_SET
+                        JSON file of items that are never deleted, nothing is deleted if it is
+                        missing or stale, can be specified as ENV EMBY_WORKING_SET (default: None)
+  --working-set-max-age WORKING_SET_MAX_AGE
+                        hours after which the working set file is stale (default: 6)
   --auth-token AUTH_TOKEN
                         emby auth key, can be specified as ENV EMBY_TOKEN (default: None)
   --days DAYS, -d DAYS  delete items this amount of days after they have been played (default: 7)
@@ -26,10 +35,41 @@ options:
   --dry-run             dry run, do not actually remove torrents
 ```
 
-When several users share a server, pass all of them, e.g. `EMBY_USER=alice,bob`.  
-An item is only removed once every listed user has played it longer than the configured amount of days ago,  
-none of them has it in progress and none of them marked it (or its Season or Series) as favorite.  
-An item only some of the users watch is therefore never removed.
+## Several users
+
+When several users share a server, list all of them, e.g. `EMBY_USER=alice,bob`.  
+A user has finished an item when they played it (play count above 0) longer than `--days` ago.  
+`--policy` decides how many of the listed users have to have finished an item before it is removed:
+
+- `user`: exactly one user is listed, and that user finished it
+- `all` (default): every listed user finished it
+- `majority`: more than half of the listed users finished it
+- `any`: at least one listed user finished it
+
+Whatever the policy, an item stays as long as any listed user has it in progress,
+played it within `--days`, or marked it (or its Season or Series) as favorite.  
+With `all`, an item only some of the users watch is never removed.
+
+## Working set
+
+`--working-set` points to a JSON file of items that must never be removed, e.g. what a sync tool still needs on this server.  
+If the file is missing, unreadable, older than `--working-set-max-age` hours, or does not cover one of the listed users,
+the script exits with code 2 without removing anything.
+
+```json
+{
+  "version": 1,
+  "generated_at": "2026-10-23T20:18:04Z",
+  "users": ["alice", "bob"],
+  "items": [
+    {"id": "<emby item id>", "path": "<item path as emby reports it>", "user": "bob", "reason": "in-progress"},
+    {"id": null, "path": "<path the item will have>", "user": null, "reason": "staged"}
+  ]
+}
+```
+
+An item is kept if its id or its path matches an entry; a null id matches on the path only.
+`generated_at` needs a timezone, `users` is optional, `user` and `reason` only show up in the log.
 
 the connection details and credentials can be provided from the environment.  
 a Dockerfile is provided and can be used as follows:  
