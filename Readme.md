@@ -92,3 +92,5 @@ With Python 3.11 or newer, `pip install -r requirements-dev.txt`, then:
 
 - `make test` runs `main.py` against a fake Emby server (`tests/fake_emby.py`) and fails below 90% line coverage
 - `make check` runs pylint with `.pylintrc`
+
+GitHub Actions runs both on every push and pull request to main.
