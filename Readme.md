@@ -53,7 +53,8 @@ With `all`, an item only some of the users watch is never removed.
 ## Working set
 
 `--working-set` points to a JSON file of items that must never be removed, e.g. what a sync tool still needs on this server.  
-If the file is missing, unreadable, older than `--working-set-max-age` hours, or does not cover one of the listed users,
+If the file is missing, unreadable, older than `--working-set-max-age` hours, dated more than 5 minutes in the future,
+or does not cover one of the listed users,
 the script exits with code 2 without removing anything.
 
 ```json

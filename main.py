@@ -255,8 +255,7 @@ def played_state(itemUserName, itemUserId, itemId):
     if not userData.get('Played') or userData.get('PlayCount', 0) == 0 or not userData.get('LastPlayedDate'):
         LOGGER.debug('%s "%s" not played by %s', item['Type'], item['Name'], itemUserName)
         return False, None
-    datePlayed = datetime.strptime(
-        userData['LastPlayedDate'], '%Y-%m-%dT%H:%M:%S.0000000Z').replace(tzinfo=timezone.utc)
+    datePlayed = datetime.fromisoformat(userData['LastPlayedDate'])
     if datePlayed > CUTOFF:
         LOGGER.debug('%s "%s" played too recently by %s', item['Type'], item['Name'], itemUserName)
         return True, None
@@ -284,6 +283,9 @@ def load_working_set(path):
         cleanup_and_die("working set %s is not usable, not deleting anything: %r" % (path, exc))
     if age > timedelta(hours=ARGS.working_set_max_age):
         cleanup_and_die("working set %s was generated %s ago, not deleting anything" % (path, age))
+    # a generated_at in the future would never become stale
+    if age < -timedelta(minutes=5):
+        cleanup_and_die("working set %s was generated %s in the future, not deleting anything" % (path, -age))
     if uncovered:
         cleanup_and_die("working set %s does not cover %s, not deleting anything" % (path, ', '.join(uncovered)))
     LOGGER.debug("working set has %s items, generated %s ago", len(byId), age)
