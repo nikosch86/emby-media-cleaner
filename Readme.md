@@ -10,7 +10,8 @@ This is useful in a scenario where an automated system is used to handle media a
 ```
 usage: main.py [-h] [--url URL] [--user USER] [--policy {user,all,majority,any}]
                [--working-set WORKING_SET] [--working-set-max-age WORKING_SET_MAX_AGE]
-               [--auth-token AUTH_TOKEN] [--days DAYS] [--limit LIMIT] [--verbose] [--dry-run]
+               [--accept-undated] [--auth-token AUTH_TOKEN] [--days DAYS] [--limit LIMIT]
+               [--verbose] [--dry-run]
 
 options:
   -h, --help            show this help message and exit
@@ -26,6 +27,8 @@ options:
                         missing or stale, can be specified as ENV EMBY_WORKING_SET (default: None)
   --working-set-max-age WORKING_SET_MAX_AGE
                         hours after which the working set file is stale (default: 6)
+  --accept-undated      count items played without a LastPlayedDate as played before --days, can
+                        be specified as ENV EMBY_ACCEPT_UNDATED=1 (default: False)
   --auth-token AUTH_TOKEN
                         emby auth key, can be specified as ENV EMBY_TOKEN (default: None)
   --days DAYS, -d DAYS  delete items this amount of days after they have been played (default: 7)
@@ -38,7 +41,8 @@ options:
 ## Several users
 
 When several users share a server, list all of them, e.g. `EMBY_USER=alice,bob`.  
-A user has finished an item when they played it (play count above 0) longer than `--days` ago.  
+A user has finished an item when Emby reports it played with a LastPlayedDate older than `--days`, whatever its play count.  
+An item played without a LastPlayedDate is kept and logged, unless `--accept-undated` counts it as played long enough ago.  
 `--policy` decides how many of the listed users have to have finished an item before it is removed:
 
 - `user`: exactly one user is listed, and that user finished it

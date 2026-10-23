@@ -15,7 +15,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fake_emby import FakeEmby, episode, finished, movie, user_data
+from fake_emby import FakeEmby, emby_date, episode, finished, movie, user_data
 
 REPO = Path(__file__).resolve().parent.parent
 COVERAGE = importlib.util.find_spec('coverage') is not None
@@ -382,6 +382,55 @@ class FavoriteCacheTest(FakeEmbyTestCase):
         self.fake.state['containerUserData'][('r1', 'sea1')] = user_data(fav=True)
         process = self.assertRun(0, ['m1', 'm2', 'm4'], '--user', 'niko,rhea', '--policy', 'any', '-vv')
         self.assertIn('season id sea1 already found in FAVORITES list', process.stderr)
+
+
+class PlayedDateTest(FakeEmbyTestCase):
+    """
+    PlayCount does not matter, a played item without LastPlayedDate only counts with --accept-undated
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.fake.state['items'] = {'x1': (movie('x1', 'Undated'), {'n1': user_data(True)})}
+
+    def test_play_count_zero_with_a_date_is_finished(self):
+        self.fake.state['items'] = {'x2': (movie('x2', 'Count zero'), {'n1': user_data(True, 0, 0, emby_date(62))})}
+        process = self.assertRun(0, ['x2'], '--user', 'niko', '-v')
+        self.assertIn("Movie: 'Count zero' played 62 days ago", process.stderr)
+
+    def test_undated_play_is_kept_and_logged(self):
+        process = self.assertRun(0, [], '--user', 'niko', '-v')
+        self.assertIn('Movie "Undated" played by niko but has no LastPlayedDate, keeping', process.stderr)
+
+    def test_accept_undated_counts_it_as_finished(self):
+        process = self.assertRun(0, ['x1'], '--user', 'niko', '--accept-undated', '-v')
+        self.assertIn("Movie: 'Undated' played at an unknown date", process.stderr)
+
+    def test_accept_undated_from_env(self):
+        self.assertRun(0, ['x1'], '--user', 'niko', env={'EMBY_ACCEPT_UNDATED': '1'})
+
+    def test_accept_undated_env_off(self):
+        self.assertRun(0, [], '--user', 'niko', env={'EMBY_ACCEPT_UNDATED': 'no'})
+
+    def test_accept_undated_age_comes_from_the_dated_plays(self):
+        self.fake.state['items'] = {'x3': (movie('x3', 'Mixed'), {'n1': finished(83), 'r1': user_data(True)})}
+        process = self.assertRun(0, ['x3'], '--user', 'niko,rhea', '--accept-undated', '-v')
+        self.assertIn("Movie: 'Mixed' played 83 days ago", process.stderr)
+
+    def test_accept_undated_keeps_what_another_user_has_in_progress(self):
+        self.fake.state['items'] = {'x4': (movie('x4', 'Half seen'), {'n1': user_data(True), 'r1': user_data(pos=5)})}
+        self.assertRun(0, [], '--user', 'niko,rhea', '--policy', 'any', '--accept-undated')
+
+    def test_accept_undated_keeps_what_is_in_the_working_set(self):
+        directory = tempfile.TemporaryDirectory()  # pylint: disable=consider-using-with
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / 'working-set.json'
+        path.write_text(json.dumps({
+            'version': 1,
+            'generated_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'items': [{'id': None, 'path': '/media/movies/x1.mkv', 'user': 'niko', 'reason': 'next-up'}],
+        }), encoding='utf-8')
+        self.assertRun(0, [], '--user', 'niko', '--accept-undated', '--working-set', str(path))
 
 
 class MediaTypeTest(FakeEmbyTestCase):

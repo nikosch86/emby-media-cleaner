@@ -49,6 +49,12 @@ ARGPARSER.add_argument(
     help="hours after which the working set file is stale (default: %(default)s)",
     type=int)
 ARGPARSER.add_argument(
+    "--accept-undated",
+    default=os.environ.get('EMBY_ACCEPT_UNDATED', '').lower() in ('1', 'true', 'yes'),
+    help="count items played without a LastPlayedDate as played before --days, "
+    "can be specified as ENV EMBY_ACCEPT_UNDATED=1 (default: %(default)s)",
+    action="store_true")
+ARGPARSER.add_argument(
     "--auth-token",
     default=os.environ.get('EMBY_TOKEN'),
     help="emby auth key, can be specified as ENV EMBY_TOKEN (default: %(default)s)")
@@ -238,27 +244,30 @@ def recursive_fav(itemUserId, item):
 
 def played_state(itemUserName, itemUserId, itemId):
     """
-    return (keep, datePlayed): keep is True if the user still needs the item,
-    because it is in progress, played after CUTOFF or favorite. datePlayed is
-    when the user finished the item before CUTOFF, None if the user has not.
+    return (keep, finished, datePlayed): keep if the user needs the item (in progress, played after CUTOFF,
+    favorite), finished if the user played it before CUTOFF, datePlayed is None for an accepted undated play
     """
     item = get_item(itemUserId, itemId)
     userData = item['UserData']
-    if userData.get('PlaybackPositionTicks', 0) > 0:
-        LOGGER.debug('%s "%s" in progress for %s', item['Type'], item['Name'], itemUserName)
-        return True, None
-    if recursive_fav(itemUserId, item):
-        LOGGER.debug('%s "%s" is favorite for %s', item['Type'], item['Name'], itemUserName)
-        return True, None
-    if not userData.get('Played') or userData.get('PlayCount', 0) == 0 or not userData.get('LastPlayedDate'):
+    if userData.get('PlaybackPositionTicks', 0) > 0 or recursive_fav(itemUserId, item):
+        LOGGER.debug('%s "%s" in progress or favorite for %s', item['Type'], item['Name'], itemUserName)
+        return True, False, None
+    if not userData.get('Played'):
         LOGGER.debug('%s "%s" not played by %s', item['Type'], item['Name'], itemUserName)
-        return False, None
+        return False, False, None
+    if not userData.get('LastPlayedDate'):
+        if ARGS.accept_undated:
+            LOGGER.debug('%s "%s" played by %s at an unknown date', item['Type'], item['Name'], itemUserName)
+            return False, True, None
+        LOGGER.info('%s "%s" played by %s but has no LastPlayedDate, keeping',
+                    item['Type'], item['Name'], itemUserName)
+        return False, False, None
     datePlayed = datetime.fromisoformat(userData['LastPlayedDate'])
     if datePlayed > CUTOFF:
         LOGGER.debug('%s "%s" played too recently by %s', item['Type'], item['Name'], itemUserName)
-        return True, None
-    LOGGER.debug("%s: '%s' User: %s Playcount: %s", item['Type'], item['Name'], itemUserName, userData['PlayCount'])
-    return False, datePlayed
+        return True, False, None
+    LOGGER.debug("%s: '%s' User: %s Playcount: %s", item['Type'], item['Name'], itemUserName, userData.get('PlayCount'))
+    return False, True, datePlayed
 
 
 def load_working_set(path):
@@ -352,16 +361,19 @@ deletedItems = 0
 DELETED_ITEMS_STATS = defaultdict(int)
 for listUserId, playedItem in ITEMS.values():
     keep = False
+    finishedUsers = 0
     playedDates = []
     for checkUserName, checkUserId in USERS:
-        keep, userPlayed = played_state(checkUserName, checkUserId, playedItem['Id'])
+        keep, userFinished, userPlayed = played_state(checkUserName, checkUserId, playedItem['Id'])
         if keep:
             break
+        finishedUsers += userFinished
         if userPlayed:
             playedDates.append(userPlayed)
-    if keep or not POLICIES[ARGS.policy](len(playedDates), len(USERS)):
+    if keep or not POLICIES[ARGS.policy](finishedUsers, len(USERS)):
         continue
-    daysSincePlayed = datetime.now(timezone.utc) - max(playedDates)
+    playedWhen = f"{(datetime.now(timezone.utc) - max(playedDates)).days} days ago" if playedDates \
+        else "at an unknown date"
     userItem = get_item(listUserId, playedItem['Id'])
 
     if playedItem['MediaType'] != 'Video':
@@ -370,10 +382,9 @@ for listUserId, playedItem in ITEMS.values():
     if playedItem['Type'] == 'Episode':
         season = get_item(listUserId, playedItem['SeasonId'])['Name']
         series = get_item(listUserId, playedItem['SeriesId'])['Name']
-        LOGGER.info("%s: '%s' '%s' '%s' played %s days ago",
-                    playedItem['Type'], series, season, playedItem['Name'], daysSincePlayed.days)
+        LOGGER.info("%s: '%s' '%s' '%s' played %s", playedItem['Type'], series, season, playedItem['Name'], playedWhen)
     else:
-        LOGGER.info("%s: '%s' played %s days ago", playedItem['Type'], playedItem['Name'], daysSincePlayed.days)
+        LOGGER.info("%s: '%s' played %s", playedItem['Type'], playedItem['Name'], playedWhen)
 
     workingSetEntry = working_set_entry(userItem)
     if workingSetEntry:
