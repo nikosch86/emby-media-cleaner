@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import os
+import posixpath
 import pprint
 import sys
 from collections import defaultdict
@@ -277,7 +278,7 @@ def load_working_set(path):
         age = datetime.now(timezone.utc) - datetime.fromisoformat(workingSet['generated_at'])
         # id is null while the Target does not hold the item yet, path is set then
         byId = {entry['id']: entry for entry in workingSet['items'] if entry.get('id')}
-        byPath = {entry['path']: entry for entry in workingSet['items'] if entry.get('path')}
+        byPath = {entry['path'].rstrip('/'): entry for entry in workingSet['items'] if entry.get('path')}
         uncovered = [name for name, _ in USERS if name not in workingSet.get('users', [name])]
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         cleanup_and_die("working set %s is not usable, not deleting anything: %r" % (path, exc))
@@ -287,6 +288,20 @@ def load_working_set(path):
         cleanup_and_die("working set %s does not cover %s, not deleting anything" % (path, ', '.join(uncovered)))
     LOGGER.debug("working set has %s items, generated %s ago", len(byId), age)
     return byId, byPath
+
+
+def working_set_entry(item):
+    """
+    return the working set entry that covers the item, its season or series
+    (by id, or by a path the item lies under), None if there is none
+    """
+    for coveringId in (item['Id'], item.get('SeasonId'), item.get('SeriesId')):
+        if coveringId in WORKING_SET_IDS:
+            return WORKING_SET_IDS[coveringId]
+    path = item.get('Path') or ''
+    while path not in WORKING_SET_PATHS and path not in ('', '/'):
+        path = posixpath.dirname(path)
+    return WORKING_SET_PATHS.get(path)
 
 
 try:
@@ -367,7 +382,7 @@ for listUserId, playedItem in ITEMS.values():
         LOGGER.info(
             f"{playedItem['Type']}: '{playedItem['Name']}' played {daysSincePlayed.days} days ago")
 
-    workingSetEntry = WORKING_SET_IDS.get(playedItem['Id']) or WORKING_SET_PATHS.get(userItem.get('Path'))
+    workingSetEntry = working_set_entry(userItem)
     if workingSetEntry:
         LOGGER.info(
             f"{playedItem['Type']} '{playedItem['Name']}' is in the working set "

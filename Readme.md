@@ -68,7 +68,8 @@ the script exits with code 2 without removing anything.
 }
 ```
 
-An item is kept if its id or its path matches an entry; a null id matches on the path only.
+An item is kept if its id, its Season's or its Series' id matches an entry, or its path is an entry's path or lies under it;
+a null id matches on the path only.
 `generated_at` needs a timezone, `users` is optional, `user` and `reason` only show up in the log.
 
 the connection details and credentials can be provided from the environment.  
